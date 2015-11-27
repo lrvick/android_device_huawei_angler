@@ -1,86 +1,73 @@
-#!/bin/bash -e
+VENDOR=huawei
+DEVICE=angler
+RELEASE_ID=mdb08m
+FACTORY_IMG_FILE=$DEVICE-$RELEASE_ID-factory-dbc17940.tgz
+FACTORY_IMG_URL=https://dl.google.com/dl/android/aosp/$FACTORY_IMG_FILE
+FACTORY_IMG_MD5=f7464cbaa4bfff29c551a8de92882b01
+DESTROOT=$ANDROID_BUILD_TOP/vendor/$VENDOR/$DEVICE/proprietary
 
-export VENDOR=huawei
-export DEVICE_VENDOR=huawei
-export DEVICE=angler
-export PROPRIETARY_FILES=proprietary-blobs.txt
+mkdir -p $DESTROOT
 
-TMPDIR="/tmp/extractfiles.$$"
-mkdir "$TMPDIR"
+WORKDIR=~/.tmp/$DEVICE
 
-# relative to SMALIBASE defined by 2nd cli arg to this script
-SMALIJAR=smali/build/libs/smali.jar
-BAKSMALIJAR=baksmali/build/libs/baksmali.jar
+checkutil() {
+	echo -n " * Checking for $1..."
+	which $1 2>&1 > /dev/null
+	if [ $? -eq 0 ]; then
+		printf " ok!\n";
+		return 0;
+	else
+		printf " not found!\n";
+		exit 1;
+	fi
+}
 
-# Only supports extract from filesystem
+checkutil simg2img
+checkutil unzip
+checkutil md5sum
+checkutil sudo
 
-if [[ "$#" -ne 2 || ! -d "$1/vendor" || ! -d "$1/system" || ! -f "$2/$SMALIJAR" || ! -f "$2/$BAKSMALIJAR" ]]; then
-    echo "Usage: $0 <path to root dir of extracted filesystem> <smali base dir for git clone https://github.com/JesusFreke/smali> >"
-    echo "  root dir must contain at least system and vendor directions"
-    echo "  smali base must contain built jar objects (within smali base run: ./gradew build)"
-    exit 1
+mkdir -p $WORKDIR
+
+if [ ! -f $WORKDIR/$FACTORY_IMG_FILE ]; then
+  wget $FACTORY_IMG_URL -O $WORKDIR/$FACTORY_IMG_FILE
 fi
 
-COPY_FROM="$1"
-SMALIBASE="$2"
+md5sum --quiet -c <( echo "$FACTORY_IMG_MD5 $WORKDIR/$FACTORY_IMG_FILE" )
+if [ $? -ne 0 ]; then
+  echo "$WORKDIR/$FACTORY_IMG_FILE failed MD5 hash check"
+fi
 
-function oat2dex()
-{
-    OFILE="$1"
+tar -C $WORKDIR -xvzf $WORKDIR/$FACTORY_IMG_FILE
 
-    OAT="`dirname $OFILE`/oat/arm64/`basename $OFILE ."${OFILE##*.}"`.odex"
-    if [ ! -e "$OAT" ]; then
-        return 0
-    fi
+unzip  -d $WORKDIR/factory_images/ -o \
+	$WORKDIR/$DEVICE-$RELEASE_ID/image-$DEVICE-${RELEASE_ID}.zip
 
-    java -jar "$SMALIBASE/$BAKSMALIJAR" -x -o "$TMPDIR/dexout" -c boot.oat -d "$COPY_FROM/system/framework/arm64" "$OAT"
-    java -jar "$SMALIBASE/$SMALIJAR" "$TMPDIR/dexout" -o "$TMPDIR/classes.dex"
-    rm -rf "$TMPDIR/dexout"
-}
+for image in system vendor; do
+  simg2img $WORKDIR/factory_images/${image}.img \
+    $WORKDIR/factory_images/${image}.ext4.img
+	mkdir -p $WORKDIR/factory_mounts/${image}
+	# I really hate using sudo here but I see no other choice
+	# Any other ideas to extract these are welcome
+	sudo mount -o loop $WORKDIR/factory_images/${image}.ext4.img \
+		$WORKDIR/factory_mounts/${image}
+done
 
-function extract() {
-    OUTBASE="$2"
-    for FILE in $(egrep -v '(^#|^$)' $1); do
-        echo "Extracting $FILE ..."
-        OLDIFS=$IFS IFS=":" PARSING_ARRAY=($FILE) IFS=$OLDIFS
-        SRCFILE=$(echo ${PARSING_ARRAY[0]} | sed -e "s/^-//g")
-        DESTFILE=${PARSING_ARRAY[1]}
-        if [ -z "$DESTFILE" ]; then
-            DESTFILE="$SRCFILE"
-        fi
-        DESTFILE=$(echo "$DESTFILE" | sed 's|^system/||')
-        DESTDIR=$(dirname "$DESTFILE")
-        if [ ! -d "$OUTBASE/$DESTDIR" ]; then
-            mkdir -p "$OUTBASE/$DESTDIR"
-        fi
+ls $WORKDIR/factory_mounts/system
+ls $WORKDIR/factory_mounts/vendor
 
-        cp "$COPY_FROM/$SRCFILE" "$OUTBASE/$DESTFILE"
+for FILE in $(egrep -v '(^\#|^$)' proprietary-blobs.txt | sed "s/^-//g"); do
 
-        # Fixup xml files
-        if [[ "$OUTBASE/$DESTFILE" =~ .xml$ ]]; then
-            xmlheader=$(grep '^<?xml version' "$OUTBASE/$DESTFILE")
-            grep -v '^<?xml version' "$OUTBASE/$DESTFILE" > "$OUTBASE/$DESTFILE".temp
-            (echo "$xmlheader"; cat "$OUTBASE/$DESTFILE".temp ) > "$OUTBASE/$DESTFILE"
-            rm "$OUTBASE/$DESTFILE".temp
-        fi
-        if [[ "$DESTFILE" =~ .(apk|jar)$ ]]; then
-            oat2dex "$COPY_FROM/$SRCFILE"
-            if [ -e "$TMPDIR/classes.dex" ]; then
-                zip -gjq "$OUTBASE/$DESTFILE" "$TMPDIR/classes.dex"
-                rm "$TMPDIR/classes.dex"
-                echo "Updated $OUTBASE/$DESTFILE from odex files"
-            fi
-        fi
-    done
-}
+	DESTFILE=$(echo "$FILE" | sed 's|^system/||')
+  DESTDIR=$(dirname "$DESTFILE")
+	if [ ! -d "$DESTROOT/$DESTDIR" ]; then
+		mkdir -p "$DESTROOT/$DESTDIR"
+  fi
 
-DEVICE_BASE="../../../vendor/$VENDOR/$DEVICE/proprietary"
-rm -rf "$DEVICE_BASE"/*
+	echo "$FILE -> $DESTROOT/$DESTFILE"
+	cp "$WORKDIR/factory_mounts/$FILE" "$DESTROOT/$DESTFILE"
 
-# Extract the device specific files
-extract "../../$DEVICE_VENDOR/$DEVICE/$PROPRIETARY_FILES" "$DEVICE_BASE"
+done
 
-# clean temp dir
-rm -rf "$TMPDIR"
-
-./setup-makefiles.sh
+sudo umount $WORKDIR/factory_mounts/system
+sudo umount $WORKDIR/factory_mounts/vendor
