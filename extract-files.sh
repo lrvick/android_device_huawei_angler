@@ -1,3 +1,5 @@
+#!/bin/bash
+
 VENDOR=huawei
 DEVICE=angler
 RELEASE_ID=mdb08m
