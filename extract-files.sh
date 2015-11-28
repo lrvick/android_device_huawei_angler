@@ -165,3 +165,5 @@ function extract(){
 checkutils simg2img unzip md5sum sudo wget
 
 extract "$factory_url" "$factory_md5" "$proprietary_files" "$device_base"
+
+bash $self_dir/setup-makefiles.sh
