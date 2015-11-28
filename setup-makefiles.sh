@@ -20,10 +20,10 @@ EOF
 BLOBLIST=""
 
 LINEEND=" \\"
-COUNT=`wc -l proprietary-blobs.txt| awk {'print $1'}`
+COUNT=`wc -l $proprietary_files| awk {'print $1'}`
 DISM=`egrep -c '(^#|^$)' $proprietary_files`
 COUNT=`expr $COUNT - $DISM`
-for FILE in `egrep -v '(^#|^$)' proprietary-blobs.txt`; do
+for FILE in `egrep -v '(^#|^$)' $proprietary_files`; do
   COUNT=`expr $COUNT - 1`
   if [ $COUNT = "0" ]; then
     LINEEND=""
